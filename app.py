@@ -15,11 +15,25 @@ from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 
-# Handle Heroku DATABASE_URL format
-database_url = os.environ.get('SQLALCHEMY_DATABASE_URI') or os.environ.get('DATABASE_URL', 'postgresql:///predictionslocal')
-if database_url.startswith('postgres://'):
-    database_url = database_url.replace('postgres://', 'postgresql://', 1)
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+# More robust database URL handling
+def get_database_url():
+    # Try custom variable first
+    url = os.environ.get('SQLALCHEMY_DATABASE_URI')
+    if not url:
+        # Fall back to Heroku's DATABASE_URL
+        url = os.environ.get('DATABASE_URL', 'postgresql:///predictionslocal')
+    
+    # Convert old postgres:// to postgresql://
+    if url.startswith('postgres://'):
+        url = url.replace('postgres://', 'postgresql://', 1)
+    
+    print(f"Using database URL: {url[:50]}...")  # Debug print
+    return url
+
+app.config['SQLALCHEMY_DATABASE_URI'] = get_database_url()
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
 
 # -----------------------------
 # Time / timezone helpers
