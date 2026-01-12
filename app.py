@@ -11,11 +11,11 @@ import re
 from statistics import median
 from collections import defaultdict
 from flask import Flask, request, Response
-from flask.ext.sqlalchemy import SQLAlchemy  # keep old import so we don't break existing env
+from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL', 'postgres:///predictionslocal'
+    'DATABASE_URL', 'postgresql:///predictionslocal'
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
@@ -134,8 +134,8 @@ class PredictionsError(Exception):
 # -----------------------------
 class User(db.Model):
     user_id = db.Column(db.Integer, primary_key=True)
-    slack_id = db.Column(db.UnicodeText, unique=True, nullable=False)  # Slack user_id (e.g. U123)
-    slack_name = db.Column(db.UnicodeText, nullable=True)
+    slack_id = db.Column(db.Text, unique=True, nullable=False)  # Slack user_id (e.g. U123)
+    slack_name = db.Column(db.Text, nullable=True)
 
     def __init__(self, slack_id, slack_name=None):
         self.slack_id = slack_id
@@ -146,11 +146,11 @@ class User(db.Model):
 
 class Cycle(db.Model):
     cycle_id = db.Column(db.Integer, primary_key=True)
-    key = db.Column(db.UnicodeText, unique=True, nullable=False)  # "YYYY-MM"
+    key = db.Column(db.Text, unique=True, nullable=False)  # "YYYY-MM"
     starts_at = db.Column(db.DateTime, nullable=False)  # naive UTC
     ends_at = db.Column(db.DateTime, nullable=False)    # naive UTC
     median_bets = db.Column(db.Integer, nullable=True)
-    winner_slack_id = db.Column(db.UnicodeText, nullable=True)
+    winner_slack_id = db.Column(db.Text, nullable=True)
     when_closed = db.Column(db.DateTime, nullable=True)
 
 class UserCycle(db.Model):
@@ -166,15 +166,15 @@ class UserCycle(db.Model):
 
 class Market(db.Model):
     market_id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.UnicodeText, unique=True, nullable=False)  # keep old "contract-name" feel
-    question = db.Column(db.UnicodeText, nullable=False)           # display text
+    name = db.Column(db.Text, unique=True, nullable=False)  # keep old "contract-name" feel
+    question = db.Column(db.Text, nullable=False)           # display text
     creator_user_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False)
 
     # trading close (expiry)
     when_closes = db.Column(db.DateTime, nullable=False)  # naive UTC
     when_created = db.Column(db.DateTime, nullable=False, default=now)
 
-    status = db.Column(db.UnicodeText, nullable=False, default='open')  # open|closed|resolved|cancelled
+    status = db.Column(db.Text, nullable=False, default='open')  # open|closed|resolved|cancelled
     resolved_outcome_id = db.Column(db.Integer, nullable=True)
     when_resolved = db.Column(db.DateTime, nullable=True)
     when_cancelled = db.Column(db.DateTime, nullable=True)
@@ -184,7 +184,7 @@ class Market(db.Model):
 class Outcome(db.Model):
     outcome_id = db.Column(db.Integer, primary_key=True)
     market_id = db.Column(db.Integer, db.ForeignKey('market.market_id'), nullable=False)
-    symbol = db.Column(db.UnicodeText, nullable=False)  # TEAM1, TEAM2, DRAW
+    symbol = db.Column(db.Text, nullable=False)  # TEAM1, TEAM2, DRAW
     q = db.Column(db.Float, nullable=False, default=0.0)  # LMSR outstanding shares
 
     __table_args__ = (db.UniqueConstraint('market_id', 'symbol', name='uniq_market_symbol'),)
@@ -204,7 +204,7 @@ class Trade(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.user_id'), nullable=False)
     market_id = db.Column(db.Integer, db.ForeignKey('market.market_id'), nullable=False)
     outcome_id = db.Column(db.Integer, db.ForeignKey('outcome.outcome_id'), nullable=False)
-    side = db.Column(db.UnicodeText, nullable=False)  # buy|sell
+    side = db.Column(db.Text, nullable=False)  # buy|sell
     shares = db.Column(db.Float, nullable=False)
     amount = db.Column(db.Float, nullable=False)      # cost (buy) or refund (sell)
     when_created = db.Column(db.DateTime, nullable=False, default=now)
@@ -223,10 +223,10 @@ def month_bounds_london(year, month):
         end = LONDON_TZ.localize(datetime.datetime(year, month + 1, 1, 0, 0, 0))
     return start, end
 
-def get_or_create_cycle(session):
+def get_or_create_cycle():
     now_london = datetime.datetime.now(LONDON_TZ)
     key = cycle_key_for_dt(now_london)
-    cyc = session.query(Cycle).filter(Cycle.key == key).one_or_none()
+    cyc = Cycle.query.filter(Cycle.key == key).one_or_none()
     if cyc:
         return cyc
 
@@ -236,23 +236,23 @@ def get_or_create_cycle(session):
         starts_at=utc_naive(start_london),
         ends_at=utc_naive(end_london),
     )
-    session.add(cyc)
-    session.flush()
+    db.session.add(cyc)
+    db.session.flush()
     return cyc
 
-def get_or_create_user(session, slack_user_id, slack_user_name=None):
-    u = session.query(User).filter(User.slack_id == slack_user_id).one_or_none()
+def get_or_create_user(slack_user_id, slack_user_name=None):
+    u = User.query.filter(User.slack_id == slack_user_id).one_or_none()
     if u:
         if slack_user_name and u.slack_name != slack_user_name:
             u.slack_name = slack_user_name
         return u
     u = User(slack_id=slack_user_id, slack_name=slack_user_name)
-    session.add(u)
-    session.flush()
+    db.session.add(u)
+    db.session.flush()
     return u
 
-def get_or_create_usercycle(session, cycle, user):
-    uc = session.query(UserCycle).filter(
+def get_or_create_usercycle(cycle, user):
+    uc = UserCycle.query.filter(
         UserCycle.cycle_id == cycle.cycle_id,
         UserCycle.user_id == user.user_id
     ).one_or_none()
@@ -264,8 +264,8 @@ def get_or_create_usercycle(session, cycle, user):
         balance=STARTING_BALANCE,
         bet_count=0
     )
-    session.add(uc)
-    session.flush()
+    db.session.add(uc)
+    db.session.flush()
     return uc
 
 def ensure_daily_topup_for_usercycle(uc):
@@ -284,7 +284,7 @@ def command(fn):
     return fn
 
 @command
-def help(session, user):
+def help(user):
     return """\
 /predict list
 /predict show <market-name>
@@ -303,14 +303,14 @@ def help(session, user):
 class _MarketNotFound(Exception):
     pass
 
-def get_market_or_raise(session, market_name):
-    m = session.query(Market).filter(Market.name == market_name).one_or_none()
+def get_market_or_raise(market_name):
+    m = Market.query.filter(Market.name == market_name).one_or_none()
     if not m:
         raise PredictionsError('unknown market %s' % market_name)
     return m
 
-def get_outcomes(session, market):
-    return session.query(Outcome).filter(Outcome.market_id == market.market_id).order_by(Outcome.outcome_id).all()
+def get_outcomes(market):
+    return Outcome.query.filter(Outcome.market_id == market.market_id).order_by(Outcome.outcome_id).all()
 
 def market_is_closed(market):
     if market.status != 'open':
@@ -325,9 +325,9 @@ def market_is_closed(market):
 # Commands
 # -----------------------------
 @command
-def list(session, user):
+def list(user):
     r = []
-    for m in session.query(Market).filter(
+    for m in Market.query.filter(
         Market.status == 'open',
         Market.when_cancelled == None
     ).order_by(Market.when_created.desc()):
@@ -337,16 +337,16 @@ def list(session, user):
     return '\n'.join(r)
 
 @command
-def show(session, user, market_name):
-    m = get_market_or_raise(session, market_name)
-    outcomes = get_outcomes(session, m)
+def show(user, market_name):
+    m = get_market_or_raise(market_name)
+    outcomes = get_outcomes(m)
     qs = [o.q for o in outcomes]
     prices = lmsr_prices(qs, m.b) if outcomes else []
 
     if m.when_cancelled is not None:
         status = 'Cancelled'
     elif m.status == 'resolved':
-        win = session.query(Outcome).filter(Outcome.outcome_id == m.resolved_outcome_id).one_or_none()
+        win = Outcome.query.filter(Outcome.outcome_id == m.resolved_outcome_id).one_or_none()
         status = 'Resolved (%s)' % (win.symbol if win else 'unknown')
     elif m.when_closes < now():
         status = 'Closed'
@@ -366,7 +366,7 @@ def show(session, user, market_name):
     # user position summary
     pos_lines = []
     for o in outcomes:
-        pos = session.query(Position).filter(
+        pos = Position.query.filter(
             Position.user_id == user.user_id,
             Position.market_id == m.market_id,
             Position.outcome_id == o.outcome_id
@@ -383,7 +383,7 @@ def show(session, user, market_name):
     )
 
 @command
-def create(session, user, market_name, question, event_time, *rest):
+def create(user, market_name, question, event_time, *rest):
     """
     /predict create <market-name> <question> <event-time> [lock] <outcomes_csv>
 
@@ -391,7 +391,7 @@ def create(session, user, market_name, question, event_time, *rest):
       /predict create latecomer "Who is most likely to come late to tomorrow's 10am meeting?" "tomorrow 10am" 15m "HABEEB,JOSH,TAYO"
       /predict create ars_liv "Arsenal vs Liverpool" "2026-01-16 19:45" 15m "ARS,LIV,DRAW"
     """
-    if session.query(Market).filter(Market.name == market_name).one_or_none():
+    if Market.query.filter(Market.name == market_name).one_or_none():
         raise PredictionsError('A market named %s already exists' % market_name)
 
     if len(rest) == 1:
@@ -415,23 +415,23 @@ def create(session, user, market_name, question, event_time, *rest):
         status='open',
         b=DEFAULT_LIQUIDITY_B,
     )
-    session.add(m)
-    session.flush()
+    db.session.add(m)
+    db.session.flush()
 
     symbols = [s.strip() for s in outcomes_csv.split(',') if s.strip()]
     if len(symbols) < 2:
         raise PredictionsError('need at least 2 outcomes (e.g. "TEAM_A,TEAM_B" or "A,B,DRAW")')
 
     for sym in symbols:
-        session.add(Outcome(market_id=m.market_id, symbol=sym, q=0.0))
+        db.session.add(Outcome(market_id=m.market_id, symbol=sym, q=0.0))
 
     return 'Created market %s. Trading locks %s (%s UTC)' % (
         market_name, dt_to_string(when_closes), when_closes
     )
 
 @command
-def buy(session, user, market_name, outcome_symbol, spend):
-    m = get_market_or_raise(session, market_name)
+def buy(user, market_name, outcome_symbol, spend):
+    m = get_market_or_raise(market_name)
     if market_is_closed(m):
         raise PredictionsError('market %s is closed' % market_name)
 
@@ -443,14 +443,14 @@ def buy(session, user, market_name, outcome_symbol, spend):
     if spend <= 0:
         raise PredictionsError('spend must be > 0')
 
-    cycle = get_or_create_cycle(session)
-    uc = get_or_create_usercycle(session, cycle, user)
+    cycle = get_or_create_cycle()
+    uc = get_or_create_usercycle(cycle, user)
     ensure_daily_topup_for_usercycle(uc)
 
     if uc.balance < spend:
         raise PredictionsError('insufficient balance (balance %.2f, need %.2f)' % (uc.balance, spend))
 
-    outcomes = get_outcomes(session, m)
+    outcomes = get_outcomes(m)
     if not outcomes:
         raise PredictionsError('market has no outcomes')
 
@@ -487,18 +487,18 @@ def buy(session, user, market_name, outcome_symbol, spend):
 
     outcomes[idx].q += dq
 
-    pos = session.query(Position).filter(
+    pos = Position.query.filter(
         Position.user_id == user.user_id,
         Position.market_id == m.market_id,
         Position.outcome_id == outcomes[idx].outcome_id
     ).one_or_none()
     if not pos:
         pos = Position(user_id=user.user_id, market_id=m.market_id, outcome_id=outcomes[idx].outcome_id, shares=0.0)
-        session.add(pos)
-        session.flush()
+        db.session.add(pos)
+        db.session.flush()
     pos.shares += dq
 
-    session.add(Trade(
+    db.session.add(Trade(
         cycle_id=cycle.cycle_id,
         user_id=user.user_id,
         market_id=m.market_id,
@@ -514,8 +514,8 @@ def buy(session, user, market_name, outcome_symbol, spend):
     )
 
 @command
-def sell(session, user, market_name, outcome_symbol, shares):
-    m = get_market_or_raise(session, market_name)
+def sell(user, market_name, outcome_symbol, shares):
+    m = get_market_or_raise(market_name)
     if market_is_closed(m):
         raise PredictionsError('market %s is closed' % market_name)
 
@@ -527,11 +527,11 @@ def sell(session, user, market_name, outcome_symbol, shares):
     if shares <= 0:
         raise PredictionsError('shares must be > 0')
 
-    cycle = get_or_create_cycle(session)
-    uc = get_or_create_usercycle(session, cycle, user)
+    cycle = get_or_create_cycle()
+    uc = get_or_create_usercycle(cycle, user)
     ensure_daily_topup_for_usercycle(uc)
 
-    outcomes = get_outcomes(session, m)
+    outcomes = get_outcomes(m)
     if not outcomes:
         raise PredictionsError('market has no outcomes')
 
@@ -545,7 +545,7 @@ def sell(session, user, market_name, outcome_symbol, shares):
     if idx is None:
         raise PredictionsError('unknown outcome %s' % outcome_symbol)
 
-    pos = session.query(Position).filter(
+    pos = Position.query.filter(
         Position.user_id == user.user_id,
         Position.market_id == m.market_id,
         Position.outcome_id == out.outcome_id
@@ -571,7 +571,7 @@ def sell(session, user, market_name, outcome_symbol, shares):
     uc.balance += refund
     uc.bet_count += 1
 
-    session.add(Trade(
+    db.session.add(Trade(
         cycle_id=cycle.cycle_id,
         user_id=user.user_id,
         market_id=m.market_id,
@@ -587,16 +587,16 @@ def sell(session, user, market_name, outcome_symbol, shares):
     )
 
 @command
-def balance(session, user):
-    cycle = get_or_create_cycle(session)
-    uc = get_or_create_usercycle(session, cycle, user)
+def balance(user):
+    cycle = get_or_create_cycle()
+    uc = get_or_create_usercycle(cycle, user)
     ensure_daily_topup_for_usercycle(uc)
     return '💰 Balance: %.2f | Bets this month: %d | Cycle: %s' % (uc.balance, uc.bet_count, cycle.key)
 
 @command
-def leaderboard(session, user):
-    cycle = get_or_create_cycle(session)
-    rows = session.query(UserCycle).filter(UserCycle.cycle_id == cycle.cycle_id).all()
+def leaderboard(user):
+    cycle = get_or_create_cycle()
+    rows = UserCycle.query.filter(UserCycle.cycle_id == cycle.cycle_id).all()
     if not rows:
         return 'No leaderboard yet (no one has interacted this cycle).'
 
@@ -611,14 +611,14 @@ def leaderboard(session, user):
         ''
     ]
     for i, r in enumerate(top, 1):
-        u = session.query(User).get(r.user_id)
+        u = User.query.get(r.user_id)
         eligible = '✅' if r.bet_count > med else '—'
         lines.append('%d. <@%s>  %.2f  (bets %d) %s' % (i, u.slack_id, r.balance, r.bet_count, eligible))
     return '\n'.join(lines)
 
 @command
-def resolve(session, user, market_name, winning_outcome):
-    m = get_market_or_raise(session, market_name)
+def resolve(user, market_name, winning_outcome):
+    m = get_market_or_raise(market_name)
 
     if m.status == 'resolved':
         raise PredictionsError('market %s is already resolved' % market_name)
@@ -627,10 +627,10 @@ def resolve(session, user, market_name, winning_outcome):
 
     # Keep old behavior: only creator can resolve
     if m.creator_user_id != user.user_id:
-        creator = session.query(User).get(m.creator_user_id)
+        creator = User.query.get(m.creator_user_id)
         raise PredictionsError('Only %s can resolve %s' % (creator.slack_id if creator else 'creator', market_name))
 
-    out = session.query(Outcome).filter(
+    out = Outcome.query.filter(
         Outcome.market_id == m.market_id,
         Outcome.symbol == winning_outcome
     ).one_or_none()
@@ -639,18 +639,18 @@ def resolve(session, user, market_name, winning_outcome):
 
     # Payout: 1 credit per share of winning outcome
     # Note: payout applies to current cycle balances (month competition)
-    cycle = get_or_create_cycle(session)
+    cycle = get_or_create_cycle()
 
-    positions = session.query(Position).filter(Position.market_id == m.market_id, Position.outcome_id == out.outcome_id).all()
+    positions = Position.query.filter(Position.market_id == m.market_id, Position.outcome_id == out.outcome_id).all()
     for p in positions:
-        uc = session.query(UserCycle).filter(
+        uc = UserCycle.query.filter(
             UserCycle.cycle_id == cycle.cycle_id,
             UserCycle.user_id == p.user_id
         ).one_or_none()
         if not uc:
             # if someone never checked balance this month, create their cycle row
-            u = session.query(User).get(p.user_id)
-            uc = get_or_create_usercycle(session, cycle, u)
+            u = User.query.get(p.user_id)
+            uc = get_or_create_usercycle(cycle, u)
         ensure_daily_topup_for_usercycle(uc)
         uc.balance += p.shares
 
@@ -661,14 +661,14 @@ def resolve(session, user, market_name, winning_outcome):
     return '🏁 Market %s resolved: %s' % (market_name, winning_outcome)
 
 @command
-def cancel(session, user, market_name):
-    m = get_market_or_raise(session, market_name)
+def cancel(user, market_name):
+    m = get_market_or_raise(market_name)
 
     if m.when_cancelled is not None:
         raise PredictionsError('market %s was already cancelled' % market_name)
 
     if m.creator_user_id != user.user_id:
-        creator = session.query(User).get(m.creator_user_id)
+        creator = User.query.get(m.creator_user_id)
         raise PredictionsError('Only %s can cancel %s' % (creator.slack_id if creator else 'creator', market_name))
 
     m.when_cancelled = now()
@@ -676,7 +676,7 @@ def cancel(session, user, market_name):
     return 'Market %s cancelled' % market_name
 
 @command
-def close_month(session, user):
+def close_month(user):
     """
     Admin-ish command: closes the current cycle and declares winner:
     eligible = bet_count > median(bet_count), winner = max balance among eligible.
@@ -686,11 +686,11 @@ def close_month(session, user):
     if admins and user.slack_id not in admins:
         raise PredictionsError('Only admins can close the month')
 
-    cycle = get_or_create_cycle(session)
+    cycle = get_or_create_cycle()
     if cycle.when_closed is not None:
         raise PredictionsError('cycle %s already closed' % cycle.key)
 
-    rows = session.query(UserCycle).filter(UserCycle.cycle_id == cycle.cycle_id).all()
+    rows = UserCycle.query.filter(UserCycle.cycle_id == cycle.cycle_id).all()
     if not rows:
         cycle.when_closed = now()
         cycle.median_bets = 0
@@ -706,7 +706,7 @@ def close_month(session, user):
     cycle.median_bets = med_val
     cycle.when_closed = now()
     if winner:
-        u = session.query(User).get(winner.user_id)
+        u = User.query.get(winner.user_id)
         cycle.winner_slack_id = u.slack_id
     else:
         cycle.winner_slack_id = None
@@ -718,14 +718,14 @@ def close_month(session, user):
         'Median bets: *%d* (eligible if bets > %d)' % (med_val, med_val),
     ]
     if winner:
-        u = session.query(User).get(winner.user_id)
+        u = User.query.get(winner.user_id)
         lines.append('🏆 Winner: <@%s> — %.2f (bets %d)' % (u.slack_id, winner.balance, winner.bet_count))
     else:
         lines.append('🏆 Winner: No eligible winner (not enough participation).')
 
     lines.append('\nTop balances:')
     for i, r in enumerate(top, 1):
-        u = session.query(User).get(r.user_id)
+        u = User.query.get(r.user_id)
         eligible_mark = '✅' if r.bet_count > med_val else '—'
         lines.append('%d. <@%s>  %.2f  (bets %d) %s' % (i, u.slack_id, r.balance, r.bet_count, eligible_mark))
 
@@ -740,75 +740,69 @@ def task_daily_topup():
     if TASK_SECRET and request.args.get('secret') != TASK_SECRET:
         return Response('forbidden', status=403)
 
-    session = db.session
     try:
-        cycle = get_or_create_cycle(session)
+        cycle = get_or_create_cycle()
         today = datetime.datetime.now(LONDON_TZ).date()
 
-        rows = session.query(UserCycle).filter(UserCycle.cycle_id == cycle.cycle_id).all()
+        rows = UserCycle.query.filter(UserCycle.cycle_id == cycle.cycle_id).all()
         for uc in rows:
             if uc.last_topup_date == today:
                 continue
             uc.balance = min(BALANCE_CAP, uc.balance + DAILY_TOPUP)
             uc.last_topup_date = today
 
-        session.commit()
+        db.session.commit()
         return 'topped up %d users for %s' % (len(rows), cycle.key)
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+    except Exception as e:
+        db.session.rollback()
+        return f'Error: {str(e)}', 500
 
 @app.route('/tasks/monthly_close', methods=['GET'])
 def task_monthly_close():
     if TASK_SECRET and request.args.get('secret') != TASK_SECRET:
         return Response('forbidden', status=403)
 
-    session = db.session
     try:
         # Use a dummy "system" user for closing if needed
-        sys_user = session.query(User).filter(User.slack_id == 'SYSTEM').one_or_none()
+        sys_user = User.query.filter(User.slack_id == 'SYSTEM').one_or_none()
         if not sys_user:
             sys_user = User(slack_id='SYSTEM', slack_name='system')
-            session.add(sys_user)
-            session.flush()
+            db.session.add(sys_user)
+            db.session.flush()
 
-        msg = close_month(session, sys_user)
-        session.commit()
+        msg = close_month(sys_user)
+        db.session.commit()
         return msg
     except PredictionsError as e:
-        session.rollback()
-        return 'Error: %s' % str(e)
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+        db.session.rollback()
+        return f'Error: {str(e)}', 400
+    except Exception as e:
+        db.session.rollback()
+        return f'Error: {str(e)}', 500
 
 # -----------------------------
 # Slack request handling
 # -----------------------------
-def lookup_or_create_user(session, slack_user_id, slack_user_name):
-    return get_or_create_user(session, slack_user_id, slack_user_name)
+def lookup_or_create_user(slack_user_id, slack_user_name):
+    return get_or_create_user(slack_user_id, slack_user_name)
 
 @app.route('/', methods=['POST'])
 def handle_request():
     if request.form['token'] != os.environ['SLACK_TOKEN']:
-        raise Exception('invalid token')
+        return Response(json.dumps(dict(response_type='ephemeral', text='Invalid token')), 
+                       mimetype='application/json', status=401)
 
     args = shlex.split(request.form.get('text', '').strip())
     if not args:
         args = ['help']
 
-    session = db.session
     try:
         slack_user_id = request.form.get('user_id') or request.form.get('user_name')
         slack_user_name = request.form.get('user_name')
 
-        user = lookup_or_create_user(session, slack_user_id, slack_user_name)
+        user = lookup_or_create_user(slack_user_id, slack_user_name)
 
-        internal_args = [session, user]
+        internal_args = [user]
         command_str = 'buy'  # default behavior is trading, but we'll route properly below
 
         # If first token is a command, use it.
@@ -830,22 +824,21 @@ def handle_request():
             ))
 
         response = selected_command(*internal_args, *args)
-        session.commit()
+        db.session.commit()
     except Exception as e:
-        session.rollback()
+        db.session.rollback()
         if isinstance(e, PredictionsError):
             return Response(json.dumps(dict(response_type='ephemeral', text='Error: %s' % str(e))),
                             mimetype='application/json')
         else:
-            raise
-    finally:
-        session.close()
+            return Response(json.dumps(dict(response_type='ephemeral', text='Internal error occurred')),
+                            mimetype='application/json', status=500)
 
     return Response(json.dumps(dict(response_type='in_channel', text=response)),
                     mimetype='application/json')
 
 if __name__ == '__main__':
-    app.debug = True
-    db.create_all()
+    with app.app_context():
+        db.create_all()
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=True)
