@@ -6,4 +6,4 @@ pytz==2023.3
 tzlocal==5.0.1
 python-dateutil==2.8.2
 pytest==7.4.0
-gunicorn==21.2.0cl
+gunicorn==21.2.0
