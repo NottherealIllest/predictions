@@ -14,11 +14,17 @@ from flask import Flask, request, Response
 from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
-    'DATABASE_URL', 'postgresql:///predictionslocal'
-)
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+# app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+#     'DATABASE_URL', 'postgresql:///predictionslocal'
+# )
+# app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# db = SQLAlchemy(app)
+
+# Handle Heroku DATABASE_URL format
+database_url = os.environ.get('DATABASE_URL', 'postgresql:///predictionslocal')
+if database_url.startswith('postgres://'):
+database_url = database_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 
 # -----------------------------
 # Time / timezone helpers
