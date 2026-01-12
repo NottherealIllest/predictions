@@ -1,4 +1,4 @@
-import os
+]import os
 import math
 import json
 import pytz
@@ -14,16 +14,12 @@ from flask import Flask, request, Response
 from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
-
-# Handle Heroku DATABASE_URL format
-database_url = os.environ.get('DATABASE_URL', 'postgresql:///predictionslocal')
-if database_url.startswith('postgres://'):
-    database_url = database_url.replace('postgres://', 'postgresql://', 1)
-
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+    'DATABASE_URL', 'postgresql:///predictionslocal'
+)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
 db = SQLAlchemy(app)
+
 # -----------------------------
 # Time / timezone helpers
 # -----------------------------
@@ -615,9 +611,10 @@ def leaderboard(user):
         ''
     ]
     for i, r in enumerate(top, 1):
-        u = User.query.get(r.user_id)
+        u = db.session.get(User, r.user_id)
         eligible = '✅' if r.bet_count > med else '—'
-        lines.append('%d. <@%s>  %.2f  (bets %d) %s' % (i, u.slack_id, r.balance, r.bet_count, eligible))
+        slack_id = u.slack_id if u else 'unknown'
+        lines.append('%d. <@%s>  %.2f  (bets %d) %s' % (i, slack_id, r.balance, r.bet_count, eligible))
     return '\n'.join(lines)
 
 @command
@@ -631,8 +628,9 @@ def resolve(user, market_name, winning_outcome):
 
     # Keep old behavior: only creator can resolve
     if m.creator_user_id != user.user_id:
-        creator = User.query.get(m.creator_user_id)
-        raise PredictionsError('Only %s can resolve %s' % (creator.slack_id if creator else 'creator', market_name))
+        creator = db.session.get(User, m.creator_user_id)
+        creator_name = creator.slack_id if creator else 'creator'
+        raise PredictionsError('Only %s can resolve %s' % (creator_name, market_name))
 
     out = Outcome.query.filter(
         Outcome.market_id == m.market_id,
@@ -653,8 +651,11 @@ def resolve(user, market_name, winning_outcome):
         ).one_or_none()
         if not uc:
             # if someone never checked balance this month, create their cycle row
-            u = User.query.get(p.user_id)
-            uc = get_or_create_usercycle(cycle, u)
+            u = db.session.get(User, p.user_id)
+            if u:
+                uc = get_or_create_usercycle(cycle, u)
+            else:
+                continue  # Skip if user not found
         ensure_daily_topup_for_usercycle(uc)
         uc.balance += p.shares
 
@@ -672,8 +673,9 @@ def cancel(user, market_name):
         raise PredictionsError('market %s was already cancelled' % market_name)
 
     if m.creator_user_id != user.user_id:
-        creator = User.query.get(m.creator_user_id)
-        raise PredictionsError('Only %s can cancel %s' % (creator.slack_id if creator else 'creator', market_name))
+        creator = db.session.get(User, m.creator_user_id)
+        creator_name = creator.slack_id if creator else 'creator'
+        raise PredictionsError('Only %s can cancel %s' % (creator_name, market_name))
 
     m.when_cancelled = now()
     m.status = 'cancelled'
@@ -710,8 +712,8 @@ def close_month(user):
     cycle.median_bets = med_val
     cycle.when_closed = now()
     if winner:
-        u = User.query.get(winner.user_id)
-        cycle.winner_slack_id = u.slack_id
+        u = db.session.get(User, winner.user_id)
+        cycle.winner_slack_id = u.slack_id if u else None
     else:
         cycle.winner_slack_id = None
 
@@ -722,16 +724,18 @@ def close_month(user):
         'Median bets: *%d* (eligible if bets > %d)' % (med_val, med_val),
     ]
     if winner:
-        u = User.query.get(winner.user_id)
-        lines.append('🏆 Winner: <@%s> — %.2f (bets %d)' % (u.slack_id, winner.balance, winner.bet_count))
+        u = db.session.get(User, winner.user_id)
+        slack_id = u.slack_id if u else 'unknown'
+        lines.append('🏆 Winner: <@%s> — %.2f (bets %d)' % (slack_id, winner.balance, winner.bet_count))
     else:
         lines.append('🏆 Winner: No eligible winner (not enough participation).')
 
     lines.append('\nTop balances:')
     for i, r in enumerate(top, 1):
-        u = User.query.get(r.user_id)
+        u = db.session.get(User, r.user_id)
         eligible_mark = '✅' if r.bet_count > med_val else '—'
-        lines.append('%d. <@%s>  %.2f  (bets %d) %s' % (i, u.slack_id, r.balance, r.bet_count, eligible_mark))
+        slack_id = u.slack_id if u else 'unknown'
+        lines.append('%d. <@%s>  %.2f  (bets %d) %s' % (i, slack_id, r.balance, r.bet_count, eligible_mark))
 
     return '\n'.join(lines)
 
@@ -831,11 +835,15 @@ def handle_request():
         db.session.commit()
     except Exception as e:
         db.session.rollback()
+        # Log the actual error for debugging
+        print(f"Error in handle_request: {str(e)}")
         if isinstance(e, PredictionsError):
             return Response(json.dumps(dict(response_type='ephemeral', text='Error: %s' % str(e))),
                             mimetype='application/json')
         else:
-            return Response(json.dumps(dict(response_type='ephemeral', text='Internal error occurred')),
+            # Show actual error for debugging (but sanitize sensitive info)
+            error_msg = str(e).replace(os.environ.get('DATABASE_URL', ''), 'DATABASE_URL')
+            return Response(json.dumps(dict(response_type='ephemeral', text='Error: %s' % error_msg)),
                             mimetype='application/json', status=500)
 
     return Response(json.dumps(dict(response_type='in_channel', text=response)),
