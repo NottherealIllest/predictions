@@ -531,6 +531,8 @@ def create(user: User, market_name: str, question: str, event_time: str, *rest) 
 @command
 def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
     """Buy shares of an outcome."""
+    logger.info(f"BUY: start for user={user.user_id}, market={market_name}, outcome={outcome_symbol}, spend={spend}")
+    
     # Parse and validate spend amount
     try:
         spend_f = float(spend)
@@ -540,15 +542,21 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
     if spend_f <= 0:
         raise PredictionsError("spend must be greater than 0")
     
+    logger.info(f"BUY: spend_f={spend_f}")
+    
     # Get market
     m = get_market_or_raise(market_name)
     if market_is_closed(m):
         raise PredictionsError(f"market {market_name} is closed for trading")
     
+    logger.info(f"BUY: market found, status={m.status}, when_closes={m.when_closes}")
+    
     # Get user's balance for this cycle
     cycle = get_or_create_cycle()
     uc = get_or_create_usercycle(cycle, user)
     ensure_daily_topup_for_usercycle(uc)
+    
+    logger.info(f"BUY: user balance={uc.balance}")
     
     if uc.balance < spend_f:
         raise PredictionsError(
@@ -557,6 +565,8 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
     
     # Fetch outcomes
     outcomes = get_outcomes(m)
+    logger.info(f"BUY: outcomes count={len(outcomes)}")
+    
     if not outcomes or len(outcomes) < 2:
         raise PredictionsError("market is misconfigured (needs at least 2 outcomes)")
     
@@ -573,9 +583,13 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
         symbols = ", ".join(o.symbol for o in outcomes)
         raise PredictionsError(f"outcome '{outcome_symbol}' not found. Available: {symbols}")
     
+    logger.info(f"BUY: target_outcome={target_outcome.symbol}, idx={target_idx}")
+    
     # Get current quantities and liquidity
     qs = [o.q for o in outcomes]
     b = m.b
+    
+    logger.info(f"BUY: qs={qs}, b={b}")
     
     if b <= 0:
         raise PredictionsError("market liquidity parameter is invalid")
@@ -585,19 +599,25 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
     best_dq = 0.0
     best_cost = 0.0
     
-    for _ in range(40):  # Increased iterations for better precision
-        mid = (low + high) / 2.0
-        mid_cost = buy_cost(qs, b, target_idx, mid)
-        
-        if mid_cost > spend_f:
-            high = mid
-        else:
-            low = mid
-            best_dq = mid
-            best_cost = mid_cost
+    try:
+        for i in range(40):  # Increased iterations for better precision
+            mid = (low + high) / 2.0
+            mid_cost = buy_cost(qs, b, target_idx, mid)
+            
+            if mid_cost > spend_f:
+                high = mid
+            else:
+                low = mid
+                best_dq = mid
+                best_cost = mid_cost
+    except Exception as e:
+        logger.exception(f"BUY: error in binary search: {e}")
+        raise PredictionsError(f"failed to calculate price: {str(e)}")
     
     dq = best_dq
     cost = best_cost
+    
+    logger.info(f"BUY: best_dq={dq}, best_cost={cost}")
     
     # Validate the trade
     if dq < 1e-9:
@@ -606,6 +626,8 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
         raise PredictionsError(f"order costs too little ({cost})")
     if cost > spend_f + 1e-6:
         raise PredictionsError(f"order exceeds budget ({cost} > {spend_f})")
+    
+    logger.info(f"BUY: validation passed, executing trade")
     
     # Execute the trade
     uc.balance -= cost
@@ -630,6 +652,8 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
     
     pos.shares += dq
     
+    logger.info(f"BUY: position updated, shares={pos.shares}")
+    
     # Log the trade
     db.session.add(
         Trade(
@@ -643,14 +667,20 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
         )
     )
     
+    logger.info(f"BUY: trade recorded")
+    
     # Calculate updated prices
     updated_qs = [o.q for o in outcomes]
     prices = lmsr_prices(updated_qs, b)
+    
+    logger.info(f"BUY: prices calculated={prices}")
     
     if target_idx >= len(prices):
         raise PredictionsError("price calculation failed")
     
     price_pct = prices[target_idx] * 100.0
+    
+    logger.info(f"BUY: success, price_pct={price_pct}")
     
     return f"✅ Bought {dq:.2f} shares of {outcome_symbol} | Cost: {cost:.2f} | New price: {price_pct:.1f}% | Balance: {uc.balance:.2f}"
 
