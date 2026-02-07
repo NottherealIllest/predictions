@@ -113,8 +113,6 @@ def lmsr_cost(qs, b):
         return 0.0
     try:
         max_q = max(qs)
-        if max_q == 0:
-            return 0.0
         m = max_q / b
         return b * (m + math.log(sum(math.exp((q / b) - m) for q in qs)))
     except (OverflowError, ValueError):
@@ -535,8 +533,8 @@ def buy(user, market_name, outcome_symbol, spend):
         dq = best_dq
         cost = buy_cost(qs, b, idx, dq)
 
-        if cost <= 0 or dq <= 0:
-            raise PredictionsError('trade failed (invalid cost or shares)')
+        if cost < 1e-9 or dq < 1e-9:
+            raise PredictionsError('trade failed (amount too small)')
         
         if cost > uc.balance + 1e-6:  # Small epsilon for floating point errors
             raise PredictionsError('insufficient balance after pricing (balance %.2f, cost %.2f)' % (uc.balance, cost))
