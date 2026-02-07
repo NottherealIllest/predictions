@@ -337,7 +337,7 @@ def command(fn):
     return fn
 
 @command
-def help(user, *args):
+def help(user):
     return """\
 /predict list
 /predict show <market-name>
@@ -936,12 +936,15 @@ def handle_request():
 
         logger.info(f"Expected args: {expected_args}, received args: {args}")
 
-        if len(args) != len(expected_args):
+        if len(args) < len(expected_args):
             if expected_args:
                 usage_str = f'usage is {command_str} {" ".join(f"<{arg}>" for arg in expected_args)}'
             else:
                 usage_str = f'usage is {command_str}'
             raise PredictionsError(usage_str)
+        
+        # Truncate args to match expected length (ignore extra arguments)
+        args = args[:len(expected_args)]
 
         # Execute command
         response = selected_command(user, *args)
