@@ -942,6 +942,12 @@ def handle_request():
             # fallback to empty expected args
             expected_args = []
 
+        # Sanitize expected_args: ensure it's a list of valid identifiers
+        if not isinstance(expected_args, (list, tuple)):
+            expected_args = []
+        else:
+            expected_args = [a for a in expected_args if isinstance(a, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", a)]
+
         logger.info(f"Expected args: {expected_args}, received args: {args}")
 
         if len(args) < len(expected_args):
