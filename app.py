@@ -337,7 +337,7 @@ def command(fn):
     return fn
 
 @command
-def help(user):
+def help(user, *args):
     return """\
 /predict list
 /predict show <market-name>
