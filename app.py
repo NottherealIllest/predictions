@@ -211,12 +211,17 @@ def buy_cost(qs: List[float], b: float, idx: int, dq: float) -> float:
         
         qs2 = list(qs)
         qs2[idx] += dq
-        cost = lmsr_cost(qs2, b) - lmsr_cost(qs, b)
+        
+        cost1 = lmsr_cost(qs, b)
+        cost2 = lmsr_cost(qs2, b)
+        cost = cost2 - cost1
+        
         if cost < 0 or math.isnan(cost) or math.isinf(cost):
+            logger.warning(f"buy_cost invalid result: cost1={cost1}, cost2={cost2}, cost={cost}")
             return float("inf")
         return cost
     except Exception as e:
-        logger.error(f"buy_cost error: {e}")
+        logger.error(f"buy_cost exception: {e}, qs={qs}, b={b}, idx={idx}, dq={dq}")
         return float("inf")
 
 
