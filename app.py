@@ -202,16 +202,21 @@ def lmsr_prices(qs: List[float], b: float) -> List[float]:
 
 def buy_cost(qs: List[float], b: float, idx: int, dq: float) -> float:
     """Cost to buy dq shares of outcome idx. Returns inf if invalid."""
-    if dq < 0 or b <= 0 or not qs:
+    if dq <= 0 or b <= 0 or not qs or len(qs) == 0 or idx < 0 or idx >= len(qs):
         return float("inf")
     try:
+        qs = [float(q) for q in qs]
+        b = float(b)
+        dq = float(dq)
+        
         qs2 = list(qs)
         qs2[idx] += dq
         cost = lmsr_cost(qs2, b) - lmsr_cost(qs, b)
         if cost < 0 or math.isnan(cost) or math.isinf(cost):
             return float("inf")
         return cost
-    except Exception:
+    except Exception as e:
+        logger.error(f"buy_cost error: {e}")
         return float("inf")
 
 
