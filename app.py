@@ -531,80 +531,94 @@ def create(user: User, market_name: str, question: str, event_time: str, *rest) 
 @command
 def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
     """Buy shares of an outcome."""
+    # Parse and validate spend amount
     try:
         spend_f = float(spend)
     except ValueError:
-        raise PredictionsError(f"{spend} is not a valid float")
+        raise PredictionsError(f'"{spend}" is not a valid number')
     
     if spend_f <= 0:
-        raise PredictionsError("spend must be > 0")
+        raise PredictionsError("spend must be greater than 0")
     
+    # Get market
     m = get_market_or_raise(market_name)
     if market_is_closed(m):
-        raise PredictionsError(f"market {market_name} is closed")
+        raise PredictionsError(f"market {market_name} is closed for trading")
     
+    # Get user's balance for this cycle
     cycle = get_or_create_cycle()
     uc = get_or_create_usercycle(cycle, user)
     ensure_daily_topup_for_usercycle(uc)
     
     if uc.balance < spend_f:
-        raise PredictionsError(f"insufficient balance (balance {uc.balance:.2f}, need {spend_f:.2f})")
+        raise PredictionsError(
+            f"insufficient balance (you have {uc.balance:.2f}, but need {spend_f:.2f})"
+        )
     
+    # Fetch outcomes
     outcomes = get_outcomes(m)
-    if not outcomes:
-        raise PredictionsError("market has no outcomes")
+    if not outcomes or len(outcomes) < 2:
+        raise PredictionsError("market is misconfigured (needs at least 2 outcomes)")
     
-    # Find target outcome
+    # Find target outcome by symbol (case-insensitive)
     target_outcome = None
-    idx = None
+    target_idx = None
     for i, o in enumerate(outcomes):
         if o.symbol.upper() == outcome_symbol.upper():
             target_outcome = o
-            idx = i
+            target_idx = i
             break
     
     if target_outcome is None:
-        available = ", ".join(o.symbol for o in outcomes)
-        raise PredictionsError(f"unknown outcome {outcome_symbol}. Available: {available}")
+        symbols = ", ".join(o.symbol for o in outcomes)
+        raise PredictionsError(f"outcome '{outcome_symbol}' not found. Available: {symbols}")
     
+    # Get current quantities and liquidity
     qs = [o.q for o in outcomes]
     b = m.b
     
-    # Binary search for dq that costs approximately spend_f
-    low, high = 0.0, 10000.0
+    if b <= 0:
+        raise PredictionsError("market liquidity parameter is invalid")
+    
+    # Binary search for share quantity that costs closest to spend_f
+    low, high = 0.0, 100000.0
     best_dq = 0.0
-    for _ in range(30):
+    best_cost = 0.0
+    
+    for _ in range(40):  # Increased iterations for better precision
         mid = (low + high) / 2.0
-        cost = buy_cost(qs, b, idx, mid)
-        if cost > spend_f:
+        mid_cost = buy_cost(qs, b, target_idx, mid)
+        
+        if mid_cost > spend_f:
             high = mid
         else:
             low = mid
             best_dq = mid
+            best_cost = mid_cost
     
     dq = best_dq
-    cost = buy_cost(qs, b, idx, dq)
+    cost = best_cost
     
-    # Validate trade amount (epsilon tolerance for floating point)
-    if cost < 1e-9 or dq < 1e-9:
-        raise PredictionsError("trade failed (amount too small)")
+    # Validate the trade
+    if dq < 1e-9:
+        raise PredictionsError(f"order too small (would buy {dq} shares)")
+    if cost < 1e-9:
+        raise PredictionsError(f"order costs too little ({cost})")
+    if cost > spend_f + 1e-6:
+        raise PredictionsError(f"order exceeds budget ({cost} > {spend_f})")
     
-    if cost > uc.balance + 1e-6:
-        raise PredictionsError(
-            f"insufficient balance after pricing (balance {uc.balance:.2f}, cost {cost:.2f})"
-        )
-    
-    # Execute trade
+    # Execute the trade
     uc.balance -= cost
     uc.bet_count += 1
     target_outcome.q += dq
     
-    # Ensure position exists
+    # Get or create position
     pos = Position.query.filter(
         Position.user_id == user.user_id,
         Position.market_id == m.market_id,
         Position.outcome_id == target_outcome.outcome_id,
     ).first()
+    
     if not pos:
         pos = Position(
             user_id=user.user_id,
@@ -613,11 +627,10 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
             shares=0.0,
         )
         db.session.add(pos)
-        db.session.flush()
     
     pos.shares += dq
     
-    # Audit log
+    # Log the trade
     db.session.add(
         Trade(
             cycle_id=cycle.cycle_id,
@@ -630,11 +643,16 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
         )
     )
     
-    # Updated prices
-    new_qs = [o.q for o in outcomes]
-    prices = lmsr_prices(new_qs, b)
+    # Calculate updated prices
+    updated_qs = [o.q for o in outcomes]
+    prices = lmsr_prices(updated_qs, b)
     
-    return f"✅ Bought {dq:.2f} shares of {outcome_symbol} in {market_name} | Price now {prices[idx]*100:.2f}% | Balance {uc.balance:.2f} | Bets {uc.bet_count}"
+    if target_idx >= len(prices):
+        raise PredictionsError("price calculation failed")
+    
+    price_pct = prices[target_idx] * 100.0
+    
+    return f"✅ Bought {dq:.2f} shares of {outcome_symbol} | Cost: {cost:.2f} | New price: {price_pct:.1f}% | Balance: {uc.balance:.2f}"
 
 
 @command
