@@ -600,27 +600,35 @@ def buy(user: User, market_name: str, outcome_symbol: str, spend: str) -> str:
     
     # Binary search for dq
     low, high = 0.0, 10000.0
-    for _ in range(50):
+    best_dq = 0.0
+    best_cost = 0.0
+    
+    for iteration in range(50):
         mid = (low + high) / 2.0
         cost = buy_cost(qs, b, target_idx, mid)
+        
+        logger.info(f"BUY: iter={iteration}, low={low}, mid={mid}, high={high}, cost={cost}")
         
         if math.isinf(cost):
             high = mid
             continue
-            
+        
         if cost > spend_f:
             high = mid
         else:
             low = mid
+            best_dq = mid
+            best_cost = cost
     
-    dq = low
-    cost = buy_cost(qs, b, target_idx, dq)
+    dq = best_dq
+    cost = best_cost
     
-    logger.info(f"BUY: found dq={dq}, cost={cost}")
+    logger.info(f"BUY: final dq={dq}, cost={cost}")
     
     # Validate
-    if dq < 1e-8 or math.isinf(cost) or cost < 0:
-        raise PredictionsError(f"Trade calculation failed")
+    if dq < 1e-8 or math.isinf(cost) or cost < 0 or cost > spend_f * 1.01:
+        logger.error(f"BUY: validation failed dq={dq}, cost={cost}, spend={spend_f}")
+        raise PredictionsError(f"Trade calculation failed (dq={dq}, cost={cost})")
     
     if cost > uc.balance + 1e-6:
         raise PredictionsError(f"Insufficient balance: {uc.balance:.2f} < {cost:.2f}")
