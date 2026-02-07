@@ -929,16 +929,18 @@ def handle_request():
         
         selected_command = commands[command_str]
         
-        # Get expected arguments (skip 'user' parameter)
-        sig = inspect.signature(selected_command)
-        param_names = list(sig.parameters.keys())
-        # Filter out 'user' and only get positional parameters (not *args or **kwargs)
-        positional_params = [p for p in param_names[1:] 
-                           if sig.parameters[p].kind in (
-                               inspect.Parameter.POSITIONAL_ONLY,
-                               inspect.Parameter.POSITIONAL_OR_KEYWORD
-                           )]
-        expected_args = positional_params
+        # Determine expected positional argument names (skip 'user')
+        expected_args = []
+        try:
+            fn_code = getattr(selected_command, '__code__', None)
+            if fn_code is not None:
+                argcount = fn_code.co_argcount
+                varnames = fn_code.co_varnames[:argcount]
+                # skip first param which should be 'user'
+                expected_args = list(varnames[1:])
+        except Exception:
+            # fallback to empty expected args
+            expected_args = []
 
         logger.info(f"Expected args: {expected_args}, received args: {args}")
 
