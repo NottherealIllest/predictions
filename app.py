@@ -396,6 +396,7 @@ def command(fn):
     Decorator to register a command and extract its parameter names.
     
     Stores function + parameter list for safe routing without introspection at request time.
+    Detects VAR_POSITIONAL (*rest) to allow variable argument counts.
     """
     import inspect
     sig = inspect.signature(fn)
@@ -406,7 +407,12 @@ def command(fn):
         if p.name != "user"
         and p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
     ]
-    commands[fn.__name__] = {"fn": fn, "params": params}
+    # Check if function accepts *args (VAR_POSITIONAL)
+    has_varargs = any(
+        p.kind == inspect.Parameter.VAR_POSITIONAL
+        for p in sig.parameters.values()
+    )
+    commands[fn.__name__] = {"fn": fn, "params": params, "has_varargs": has_varargs}
     return fn
 
 
@@ -964,8 +970,9 @@ def handle_request():
         
         selected_command = entry["fn"]
         expected_params = entry.get("params", [])
+        has_varargs = entry.get("has_varargs", False)
         
-        logger.info(f"Expected args: {expected_params}, received args: {args}")
+        logger.info(f"Expected args: {expected_params}, has_varargs: {has_varargs}, received args: {args}")
         
         # Validate argument count
         if len(args) < len(expected_params):
@@ -975,8 +982,9 @@ def handle_request():
                 usage_str = f"usage is {command_str}"
             raise PredictionsError(usage_str)
         
-        # Truncate extra args
-        args = args[: len(expected_params)]
+        # Truncate extra args only if function doesn't accept *args
+        if not has_varargs:
+            args = args[: len(expected_params)]
         
         # Execute
         response = selected_command(user, *args)
